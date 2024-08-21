@@ -45,7 +45,7 @@ pub struct Glob {
 impl Glob {
     /// Returns the file path that defined this glob.
     pub fn from(&self) -> Option<&Path> {
-        self.from.as_ref().map(|p| &**p)
+        self.from.as_deref()
     }
 
     /// The original glob as it was defined in a gitignore file.
@@ -100,9 +100,7 @@ impl Gitignore {
     ///
     /// Note that I/O errors are ignored. For more granular control over
     /// errors, use `GitignoreBuilder`.
-    pub fn new<P: AsRef<Path>>(
-        gitignore_path: P,
-    ) -> (Gitignore, Option<Error>) {
+    pub fn new<P: AsRef<Path>>(gitignore_path: P) -> (Gitignore, Option<Error>) {
         let path = gitignore_path.as_ref();
         let parent = path.parent().unwrap_or(Path::new("/"));
         let mut builder = GitignoreBuilder::new(parent);
@@ -149,7 +147,7 @@ impl Gitignore {
     ///
     /// All matches are done relative to this path.
     pub fn path(&self) -> &Path {
-        &*self.root
+        &self.root
     }
 
     /// Returns true if and only if this gitignore has zero globs, and
@@ -185,11 +183,7 @@ impl Gitignore {
     /// determined by a common suffix of the directory containing this
     /// gitignore) is stripped. If there is no common suffix/prefix overlap,
     /// then `path` is assumed to be relative to this matcher.
-    pub fn matched<P: AsRef<Path>>(
-        &self,
-        path: P,
-        is_dir: bool,
-    ) -> Match<&Glob> {
+    pub fn matched<P: AsRef<Path>>(&self, path: P, is_dir: bool) -> Match<&Glob> {
         if self.is_empty() {
             return Match::None;
         }
@@ -242,18 +236,14 @@ impl Gitignore {
     }
 
     /// Like matched, but takes a path that has already been stripped.
-    fn matched_stripped<P: AsRef<Path>>(
-        &self,
-        path: P,
-        is_dir: bool,
-    ) -> Match<&Glob> {
+    fn matched_stripped<P: AsRef<Path>>(&self, path: P, is_dir: bool) -> Match<&Glob> {
         if self.is_empty() {
             return Match::None;
         }
         let path = path.as_ref();
         let mut matches = self.matches.as_ref().unwrap().get();
         let candidate = Candidate::new(path);
-        self.set.matches_candidate_into(&candidate, &mut *matches);
+        self.set.matches_candidate_into(&candidate, &mut matches);
         for &i in matches.iter().rev() {
             let glob = &self.globs[i];
             if !glob.is_only_dir() || is_dir {
@@ -269,10 +259,7 @@ impl Gitignore {
 
     /// Strips the given path such that it's suitable for matching with this
     /// gitignore matcher.
-    fn strip<'a, P: 'a + AsRef<Path> + ?Sized>(
-        &'a self,
-        path: &'a P,
-    ) -> &'a Path {
+    fn strip<'a, P: 'a + AsRef<Path> + ?Sized>(&'a self, path: &'a P) -> &'a Path {
         let mut path = path.as_ref();
         // A leading ./ is completely superfluous. We also strip it from
         // our gitignore root path, so we need to strip it from our candidate
@@ -333,17 +320,17 @@ impl GitignoreBuilder {
     pub fn build(&self) -> Result<Gitignore, Error> {
         let nignore = self.globs.iter().filter(|g| !g.is_whitelist()).count();
         let nwhite = self.globs.iter().filter(|g| g.is_whitelist()).count();
-        let set = self
-            .builder
-            .build()
-            .map_err(|err| Error::Glob { glob: None, err: err.to_string() })?;
+        let set = self.builder.build().map_err(|err| Error::Glob {
+            glob: None,
+            err: err.to_string(),
+        })?;
         Ok(Gitignore {
             set,
             root: self.root.clone(),
             globs: self.globs.clone(),
             num_ignores: nignore as u64,
             num_whitelists: nwhite as u64,
-            matches: Some(Arc::new(Pool::new(|| vec![]))),
+            matches: Some(Arc::new(Pool::new(std::vec::Vec::new))),
         })
     }
 
@@ -521,10 +508,7 @@ impl GitignoreBuilder {
     /// affected.
     ///
     /// This is disabled by default.
-    pub fn case_insensitive(
-        &mut self,
-        yes: bool,
-    ) -> Result<&mut GitignoreBuilder, Error> {
+    pub fn case_insensitive(&mut self, yes: bool) -> Result<&mut GitignoreBuilder, Error> {
         // TODO: This should not return a `Result`. Fix this in the next semver
         // release.
         self.case_insensitive = yes;
@@ -540,13 +524,11 @@ pub fn gitconfig_excludes_path() -> Option<PathBuf> {
     // both can be active at the same time, where $HOME/.gitconfig takes
     // precedent. So if $HOME/.gitconfig defines a `core.excludesFile`, then
     // we're done.
-    match gitconfig_home_contents().and_then(|x| parse_excludes_file(&x)) {
-        Some(path) => return Some(path),
-        None => {}
+    if let Some(path) = gitconfig_home_contents().and_then(|x| parse_excludes_file(&x)) {
+        return Some(path);
     }
-    match gitconfig_xdg_contents().and_then(|x| parse_excludes_file(&x)) {
-        Some(path) => return Some(path),
-        None => {}
+    if let Some(path) = gitconfig_xdg_contents().and_then(|x| parse_excludes_file(&x)) {
+        return Some(path);
     }
     excludes_file_default()
 }
@@ -570,7 +552,13 @@ fn gitconfig_home_contents() -> Option<Vec<u8>> {
 /// the user's XDG_CONFIG_HOME directory.
 fn gitconfig_xdg_contents() -> Option<Vec<u8>> {
     let path = std::env::var_os("XDG_CONFIG_HOME")
-        .and_then(|x| if x.is_empty() { None } else { Some(PathBuf::from(x)) })
+        .and_then(|x| {
+            if x.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(x))
+            }
+        })
         .or_else(|| home_dir().map(|p| p.join(".config")))
         .map(|x| x.join("git/config"));
     let mut file = match path.and_then(|p| File::open(p).ok()) {
@@ -586,7 +574,13 @@ fn gitconfig_xdg_contents() -> Option<Vec<u8>> {
 /// Specifically, this respects XDG_CONFIG_HOME.
 fn excludes_file_default() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
-        .and_then(|x| if x.is_empty() { None } else { Some(PathBuf::from(x)) })
+        .and_then(|x| {
+            if x.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(x))
+            }
+        })
         .or_else(|| home_dir().map(|p| p.join(".config")))
         .map(|x| x.join("git/ignore"))
 }
@@ -615,7 +609,9 @@ fn parse_excludes_file(data: &[u8]) -> Option<PathBuf> {
     re.captures(data, &mut caps);
     let span = caps.get_group(1)?;
     let candidate = &data[span];
-    std::str::from_utf8(candidate).ok().map(|s| PathBuf::from(expand_tilde(s)))
+    std::str::from_utf8(candidate)
+        .ok()
+        .map(|s| PathBuf::from(expand_tilde(s)))
 }
 
 /// Expands ~ in file paths to the value of $HOME.
@@ -673,7 +669,7 @@ mod tests {
         };
     }
 
-    const ROOT: &'static str = "/home/foobar/rust/rg";
+    const ROOT: &str = "/home/foobar/rust/rg";
 
     ignored!(ig1, ROOT, "months", "months");
     ignored!(ig2, ROOT, "*.lock", "Cargo.lock");
@@ -777,10 +773,7 @@ mod tests {
     fn parse_excludes_file4() {
         let data = bytes("[core]\nexcludesFile = \"~/foo/bar\"");
         let got = super::parse_excludes_file(&data);
-        assert_eq!(
-            path_string(got.unwrap()),
-            super::expand_tilde("~/foo/bar")
-        );
+        assert_eq!(path_string(got.unwrap()), super::expand_tilde("~/foo/bar"));
     }
 
     #[test]

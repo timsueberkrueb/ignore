@@ -1,11 +1,14 @@
 ignore
 ======
+
+Fork of the [ignore crate](https://github.com/BurntSushi/ripgrep/tree/master/crates/ignore) at `af8c386d5e10eaa4b8cb687c4f5b05893a7ae0ce`.
+Main difference is that the `Ignore` struct is exposed for more fine-grained control over the iteration.
+
+---
+
 The ignore crate provides a fast recursive directory iterator that respects
 various filters such as globs, file types and `.gitignore` files. This crate
 also provides lower level direct access to gitignore and file type matchers.
-
-[![Build status](https://github.com/BurntSushi/ripgrep/workflows/ci/badge.svg)](https://github.com/BurntSushi/ripgrep/actions)
-[![](https://img.shields.io/crates/v/ignore.svg)](https://crates.io/crates/ignore)
 
 Dual-licensed under MIT or the [UNLICENSE](https://unlicense.org/).
 

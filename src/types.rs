@@ -204,12 +204,8 @@ impl<T> Selection<T> {
 
     fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Selection<U> {
         match self {
-            Selection::Select(name, inner) => {
-                Selection::Select(name, f(inner))
-            }
-            Selection::Negate(name, inner) => {
-                Selection::Negate(name, f(inner))
-            }
+            Selection::Select(name, inner) => Selection::Select(name, f(inner)),
+            Selection::Negate(name, inner) => Selection::Negate(name, f(inner)),
         }
     }
 
@@ -231,7 +227,7 @@ impl Types {
             has_selected: false,
             glob_to_selection: vec![],
             set: GlobSetBuilder::new().build().unwrap(),
-            matches: Arc::new(Pool::new(|| vec![])),
+            matches: Arc::new(Pool::new(std::vec::Vec::new)),
         }
     }
 
@@ -258,11 +254,7 @@ impl Types {
     /// The path is considered ignored if it matches a negated file type.
     /// If at least one file type is selected and `path` doesn't match, then
     /// the path is also considered ignored.
-    pub fn matched<'a, P: AsRef<Path>>(
-        &'a self,
-        path: P,
-        is_dir: bool,
-    ) -> Match<Glob<'a>> {
+    pub fn matched<P: AsRef<Path>>(&self, path: P, is_dir: bool) -> Match<Glob<'_>> {
         // File types don't apply to directories, and we can't do anything
         // if our glob set is empty.
         if is_dir || self.set.is_empty() {
@@ -280,7 +272,7 @@ impl Types {
             }
         };
         let mut matches = self.matches.get();
-        self.set.matches_into(name, &mut *matches);
+        self.set.matches_into(name, &mut matches);
         // The highest precedent match is the last one.
         if let Some(&i) = matches.last() {
             let (isel, _) = self.glob_to_selection[i];
@@ -307,6 +299,12 @@ pub struct TypesBuilder {
     selections: Vec<Selection<()>>,
 }
 
+impl Default for TypesBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypesBuilder {
     /// Create a new builder for a file type matcher.
     ///
@@ -314,7 +312,10 @@ impl TypesBuilder {
     /// of default type definitions can be added with `add_defaults`, and
     /// additional type definitions can be added with `select` and `negate`.
     pub fn new() -> TypesBuilder {
-        TypesBuilder { types: HashMap::new(), selections: vec![] }
+        TypesBuilder {
+            types: HashMap::new(),
+            selections: vec![],
+        }
     }
 
     /// Build the current set of file type definitions *and* selections into
@@ -348,16 +349,17 @@ impl TypesBuilder {
             }
             selections.push(selection.clone().map(move |_| def));
         }
-        let set = build_set
-            .build()
-            .map_err(|err| Error::Glob { glob: None, err: err.to_string() })?;
+        let set = build_set.build().map_err(|err| Error::Glob {
+            glob: None,
+            err: err.to_string(),
+        })?;
         Ok(Types {
             defs,
             selections,
             has_selected,
             glob_to_selection,
             set,
-            matches: Arc::new(Pool::new(|| vec![])),
+            matches: Arc::new(Pool::new(std::vec::Vec::new)),
         })
     }
 
@@ -381,10 +383,12 @@ impl TypesBuilder {
     pub fn select(&mut self, name: &str) -> &mut TypesBuilder {
         if name == "all" {
             for name in self.types.keys() {
-                self.selections.push(Selection::Select(name.to_string(), ()));
+                self.selections
+                    .push(Selection::Select(name.to_string(), ()));
             }
         } else {
-            self.selections.push(Selection::Select(name.to_string(), ()));
+            self.selections
+                .push(Selection::Select(name.to_string(), ()));
         }
         self
     }
@@ -395,10 +399,12 @@ impl TypesBuilder {
     pub fn negate(&mut self, name: &str) -> &mut TypesBuilder {
         if name == "all" {
             for name in self.types.keys() {
-                self.selections.push(Selection::Negate(name.to_string(), ()));
+                self.selections
+                    .push(Selection::Negate(name.to_string(), ()));
             }
         } else {
-            self.selections.push(Selection::Negate(name.to_string(), ()));
+            self.selections
+                .push(Selection::Negate(name.to_string(), ()));
         }
         self
     }
@@ -437,6 +443,7 @@ impl TypesBuilder {
     /// 2. `{name}:include:{comma-separated list of already defined names}.
     ///     This defines an 'include' definition that associates the given name
     ///     with the definitions of the given existing types.
+    ///
     /// Names may not include any characters that are not
     /// Unicode letters or numbers.
     pub fn add_def(&mut self, def: &str) -> Result<(), Error> {
@@ -453,10 +460,7 @@ impl TypesBuilder {
             3 => {
                 let name = parts[0];
                 let types_string = parts[2];
-                if name.is_empty()
-                    || parts[1] != "include"
-                    || types_string.is_empty()
-                {
+                if name.is_empty() || parts[1] != "include" || types_string.is_empty() {
                     return Err(Error::InvalidDefinition);
                 }
                 let types = types_string.split(',');
@@ -466,8 +470,7 @@ impl TypesBuilder {
                     return Err(Error::InvalidDefinition);
                 }
                 for type_name in types {
-                    let globs =
-                        self.types.get(type_name).unwrap().globs.clone();
+                    let globs = self.types.get(type_name).unwrap().globs.clone();
                     for glob in globs {
                         self.add(name, &glob)?;
                     }
@@ -480,7 +483,7 @@ impl TypesBuilder {
 
     /// Add a set of default file type definitions.
     pub fn add_defaults(&mut self) -> &mut TypesBuilder {
-        static MSG: &'static str = "adding a default type should never fail";
+        static MSG: &str = "adding a default type should never fail";
         for &(names, exts) in DEFAULT_TYPES {
             for name in names {
                 for ext in exts {
@@ -539,26 +542,26 @@ mod tests {
         ]
     }
 
-    matched!(match1, types(), vec!["rust"], vec![], "lib.rs");
-    matched!(match2, types(), vec!["html"], vec![], "index.html");
-    matched!(match3, types(), vec!["html"], vec![], "index.htm");
-    matched!(match4, types(), vec!["html", "rust"], vec![], "main.rs");
-    matched!(match5, types(), vec![], vec![], "index.html");
-    matched!(match6, types(), vec![], vec!["rust"], "index.html");
-    matched!(match7, types(), vec!["foo"], vec!["rust"], "main.foo");
-    matched!(match8, types(), vec!["combo"], vec![], "index.html");
-    matched!(match9, types(), vec!["combo"], vec![], "lib.rs");
-    matched!(match10, types(), vec!["py"], vec![], "main.py");
-    matched!(match11, types(), vec!["python"], vec![], "main.py");
+    matched!(match1, types(), ["rust"], [], "lib.rs");
+    matched!(match2, types(), ["html"], [], "index.html");
+    matched!(match3, types(), ["html"], [], "index.htm");
+    matched!(match4, types(), ["html", "rust"], [], "main.rs");
+    matched!(match5, types(), [], [], "index.html");
+    matched!(match6, types(), [], ["rust"], "index.html");
+    matched!(match7, types(), ["foo"], ["rust"], "main.foo");
+    matched!(match8, types(), ["combo"], [], "index.html");
+    matched!(match9, types(), ["combo"], [], "lib.rs");
+    matched!(match10, types(), ["py"], [], "main.py");
+    matched!(match11, types(), ["python"], [], "main.py");
 
-    matched!(not, matchnot1, types(), vec!["rust"], vec![], "index.html");
-    matched!(not, matchnot2, types(), vec![], vec!["rust"], "main.rs");
-    matched!(not, matchnot3, types(), vec!["foo"], vec!["rust"], "main.rs");
-    matched!(not, matchnot4, types(), vec!["rust"], vec!["foo"], "main.rs");
-    matched!(not, matchnot5, types(), vec!["rust"], vec!["foo"], "main.foo");
-    matched!(not, matchnot6, types(), vec!["combo"], vec![], "leftpad.js");
-    matched!(not, matchnot7, types(), vec!["py"], vec![], "index.html");
-    matched!(not, matchnot8, types(), vec!["python"], vec![], "doc.md");
+    matched!(not, matchnot1, types(), ["rust"], [], "index.html");
+    matched!(not, matchnot2, types(), [], ["rust"], "main.rs");
+    matched!(not, matchnot3, types(), ["foo"], ["rust"], "main.rs");
+    matched!(not, matchnot4, types(), ["rust"], ["foo"], "main.rs");
+    matched!(not, matchnot5, types(), ["rust"], ["foo"], "main.foo");
+    matched!(not, matchnot6, types(), ["combo"], [], "leftpad.js");
+    matched!(not, matchnot7, types(), ["py"], [], "index.html");
+    matched!(not, matchnot8, types(), ["python"], [], "doc.md");
 
     #[test]
     fn test_invalid_defs() {

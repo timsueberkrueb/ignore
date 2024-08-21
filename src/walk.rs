@@ -104,15 +104,24 @@ impl DirEntry {
     }
 
     fn new_stdin() -> DirEntry {
-        DirEntry { dent: DirEntryInner::Stdin, err: None }
+        DirEntry {
+            dent: DirEntryInner::Stdin,
+            err: None,
+        }
     }
 
     fn new_walkdir(dent: walkdir::DirEntry, err: Option<Error>) -> DirEntry {
-        DirEntry { dent: DirEntryInner::Walkdir(dent), err }
+        DirEntry {
+            dent: DirEntryInner::Walkdir(dent),
+            err,
+        }
     }
 
-    fn new_raw(dent: DirEntryRaw, err: Option<Error>) -> DirEntry {
-        DirEntry { dent: DirEntryInner::Raw(dent), err }
+    pub(crate) fn new_raw(dent: DirEntryRaw, err: Option<Error>) -> DirEntry {
+        DirEntry {
+            dent: DirEntryInner::Raw(dent),
+            err,
+        }
     }
 }
 
@@ -162,10 +171,7 @@ impl DirEntryInner {
     }
 
     fn is_stdin(&self) -> bool {
-        match *self {
-            DirEntryInner::Stdin => true,
-            _ => false,
-        }
+        matches!(*self, DirEntryInner::Stdin)
     }
 
     fn metadata(&self) -> Result<Metadata, Error> {
@@ -178,9 +184,9 @@ impl DirEntryInner {
                 ));
                 Err(err.with_path("<stdin>"))
             }
-            Walkdir(ref x) => x.metadata().map_err(|err| {
-                Error::Io(io::Error::from(err)).with_path(x.path())
-            }),
+            Walkdir(ref x) => x
+                .metadata()
+                .map_err(|err| Error::Io(io::Error::from(err)).with_path(x.path())),
             Raw(ref x) => x.metadata(),
         }
     }
@@ -232,7 +238,7 @@ impl DirEntryInner {
 /// DirEntryRaw is essentially copied from the walkdir crate so that we can
 /// build `DirEntry`s from whole cloth in the parallel iterator.
 #[derive(Clone)]
-struct DirEntryRaw {
+pub(crate) struct DirEntryRaw {
     /// The path as reported by the `fs::ReadDir` iterator (even if it's a
     /// symbolic link).
     path: PathBuf,
@@ -299,7 +305,7 @@ impl DirEntryRaw {
         } else {
             fs::symlink_metadata(&self.path)
         }
-        .map_err(|err| Error::Io(io::Error::from(err)).with_path(&self.path))
+        .map_err(|err| Error::Io(err).with_path(&self.path))
     }
 
     fn file_type(&self) -> FileType {
@@ -307,7 +313,9 @@ impl DirEntryRaw {
     }
 
     fn file_name(&self) -> &OsStr {
-        self.path.file_name().unwrap_or_else(|| self.path.as_os_str())
+        self.path
+            .file_name()
+            .unwrap_or_else(|| self.path.as_os_str())
     }
 
     fn depth(&self) -> usize {
@@ -319,13 +327,13 @@ impl DirEntryRaw {
         self.ino
     }
 
-    fn from_entry(
-        depth: usize,
-        ent: &fs::DirEntry,
-    ) -> Result<DirEntryRaw, Error> {
+    pub(crate) fn from_entry(depth: usize, ent: &fs::DirEntry) -> Result<DirEntryRaw, Error> {
         let ty = ent.file_type().map_err(|err| {
-            let err = Error::Io(io::Error::from(err)).with_path(ent.path());
-            Error::WithDepth { depth, err: Box::new(err) }
+            let err = Error::Io(err).with_path(ent.path());
+            Error::WithDepth {
+                depth,
+                err: Box::new(err),
+            }
         })?;
         DirEntryRaw::from_entry_os(depth, ent, ty)
     }
@@ -338,7 +346,10 @@ impl DirEntryRaw {
     ) -> Result<DirEntryRaw, Error> {
         let md = ent.metadata().map_err(|err| {
             let err = Error::Io(io::Error::from(err)).with_path(ent.path());
-            Error::WithDepth { depth, err: Box::new(err) }
+            Error::WithDepth {
+                depth,
+                err: Box::new(err),
+            }
         })?;
         Ok(DirEntryRaw {
             path: ent.path(),
@@ -381,13 +392,8 @@ impl DirEntryRaw {
     }
 
     #[cfg(windows)]
-    fn from_path(
-        depth: usize,
-        pb: PathBuf,
-        link: bool,
-    ) -> Result<DirEntryRaw, Error> {
-        let md =
-            fs::metadata(&pb).map_err(|err| Error::Io(err).with_path(&pb))?;
+    fn from_path(depth: usize, pb: PathBuf, link: bool) -> Result<DirEntryRaw, Error> {
+        let md = fs::metadata(&pb).map_err(|err| Error::Io(err).with_path(&pb))?;
         Ok(DirEntryRaw {
             path: pb,
             ty: md.file_type(),
@@ -398,15 +404,10 @@ impl DirEntryRaw {
     }
 
     #[cfg(unix)]
-    fn from_path(
-        depth: usize,
-        pb: PathBuf,
-        link: bool,
-    ) -> Result<DirEntryRaw, Error> {
+    fn from_path(depth: usize, pb: PathBuf, link: bool) -> Result<DirEntryRaw, Error> {
         use std::os::unix::fs::MetadataExt;
 
-        let md =
-            fs::metadata(&pb).map_err(|err| Error::Io(err).with_path(&pb))?;
+        let md = fs::metadata(&pb).map_err(|err| Error::Io(err).with_path(&pb))?;
         Ok(DirEntryRaw {
             path: pb,
             ty: md.file_type(),
@@ -419,11 +420,7 @@ impl DirEntryRaw {
     // Placeholder implementation to allow compiling on non-standard platforms
     // (e.g. wasm32).
     #[cfg(not(any(windows, unix)))]
-    fn from_path(
-        depth: usize,
-        pb: PathBuf,
-        link: bool,
-    ) -> Result<DirEntryRaw, Error> {
+    fn from_path(depth: usize, pb: PathBuf, link: bool) -> Result<DirEntryRaw, Error> {
         Err(Error::Io(io::Error::new(
             io::ErrorKind::Other,
             "unsupported platform",
@@ -453,32 +450,32 @@ impl DirEntryRaw {
 /// the rules assume a default configuration.
 ///
 /// * First, glob overrides are checked. If a path matches a glob override,
-/// then matching stops. The path is then only skipped if the glob that matched
-/// the path is an ignore glob. (An override glob is a whitelist glob unless it
-/// starts with a `!`, in which case it is an ignore glob.)
+///   then matching stops. The path is then only skipped if the glob that matched
+///   the path is an ignore glob. (An override glob is a whitelist glob unless it
+///   starts with a `!`, in which case it is an ignore glob.)
 /// * Second, ignore files are checked. Ignore files currently only come from
-/// git ignore files (`.gitignore`, `.git/info/exclude` and the configured
-/// global gitignore file), plain `.ignore` files, which have the same format
-/// as gitignore files, or explicitly added ignore files. The precedence order
-/// is: `.ignore`, `.gitignore`, `.git/info/exclude`, global gitignore and
-/// finally explicitly added ignore files. Note that precedence between
-/// different types of ignore files is not impacted by the directory hierarchy;
-/// any `.ignore` file overrides all `.gitignore` files. Within each precedence
-/// level, more nested ignore files have a higher precedence than less nested
-/// ignore files.
+///   git ignore files (`.gitignore`, `.git/info/exclude` and the configured
+///   global gitignore file), plain `.ignore` files, which have the same format
+///   as gitignore files, or explicitly added ignore files. The precedence order
+///   is: `.ignore`, `.gitignore`, `.git/info/exclude`, global gitignore and
+///   finally explicitly added ignore files. Note that precedence between
+///   different types of ignore files is not impacted by the directory hierarchy;
+///   any `.ignore` file overrides all `.gitignore` files. Within each precedence
+///   level, more nested ignore files have a higher precedence than less nested
+///   ignore files.
 /// * Third, if the previous step yields an ignore match, then all matching
-/// is stopped and the path is skipped. If it yields a whitelist match, then
-/// matching continues. A whitelist match can be overridden by a later matcher.
+///   is stopped and the path is skipped. If it yields a whitelist match, then
+///   matching continues. A whitelist match can be overridden by a later matcher.
 /// * Fourth, unless the path is a directory, the file type matcher is run on
-/// the path. As above, if it yields an ignore match, then all matching is
-/// stopped and the path is skipped. If it yields a whitelist match, then
-/// matching continues.
+///   the path. As above, if it yields an ignore match, then all matching is
+///   stopped and the path is skipped. If it yields a whitelist match, then
+///   matching continues.
 /// * Fifth, if the path hasn't been whitelisted and it is hidden, then the
-/// path is skipped.
+///   path is skipped.
 /// * Sixth, unless the path is a directory, the size of the file is compared
-/// against the max filesize limit. If it exceeds the limit, it is skipped.
+///   against the max filesize limit. If it exceeds the limit, it is skipped.
 /// * Seventh, if the path has made it this far then it is yielded in the
-/// iterator.
+///   iterator.
 #[derive(Clone)]
 pub struct WalkBuilder {
     paths: Vec<PathBuf>,
@@ -494,6 +491,7 @@ pub struct WalkBuilder {
 }
 
 #[derive(Clone)]
+#[allow(clippy::type_complexity)]
 enum Sorter {
     ByName(Arc<dyn Fn(&OsStr, &OsStr) -> Ordering + Send + Sync + 'static>),
     ByPath(Arc<dyn Fn(&Path, &Path) -> Ordering + Send + Sync + 'static>),
@@ -559,14 +557,10 @@ impl WalkBuilder {
                     if let Some(ref sorter) = sorter {
                         match sorter.clone() {
                             Sorter::ByName(cmp) => {
-                                wd = wd.sort_by(move |a, b| {
-                                    cmp(a.file_name(), b.file_name())
-                                });
+                                wd = wd.sort_by(move |a, b| cmp(a.file_name(), b.file_name()));
                             }
                             Sorter::ByPath(cmp) => {
-                                wd = wd.sort_by(move |a, b| {
-                                    cmp(a.path(), b.path())
-                                });
+                                wd = wd.sort_by(move |a, b| cmp(a.path(), b.path()));
                             }
                         }
                     }
@@ -1060,7 +1054,11 @@ enum WalkEvent {
 
 impl From<WalkDir> for WalkEventIter {
     fn from(it: WalkDir) -> WalkEventIter {
-        WalkEventIter { depth: 0, it: it.into_iter(), next: None }
+        WalkEventIter {
+            depth: 0,
+            it: it.into_iter(),
+            next: None,
+        }
     }
 }
 
@@ -1133,9 +1131,7 @@ pub trait ParallelVisitorBuilder<'s> {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's>;
 }
 
-impl<'a, 's, P: ParallelVisitorBuilder<'s>> ParallelVisitorBuilder<'s>
-    for &'a mut P
-{
+impl<'a, 's, P: ParallelVisitorBuilder<'s>> ParallelVisitorBuilder<'s> for &'a mut P {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
         (**self).build()
     }
@@ -1156,17 +1152,14 @@ struct FnBuilder<F> {
     builder: F,
 }
 
-impl<'s, F: FnMut() -> FnVisitor<'s>> ParallelVisitorBuilder<'s>
-    for FnBuilder<F>
-{
+impl<'s, F: FnMut() -> FnVisitor<'s>> ParallelVisitorBuilder<'s> for FnBuilder<F> {
     fn build(&mut self) -> Box<dyn ParallelVisitor + 's> {
         let visitor = (self.builder)();
         Box::new(FnVisitorImp { visitor })
     }
 }
 
-type FnVisitor<'s> =
-    Box<dyn FnMut(Result<DirEntry, Error>) -> WalkState + Send + 's>;
+type FnVisitor<'s> = Box<dyn FnMut(Result<DirEntry, Error>) -> WalkState + Send + 's>;
 
 struct FnVisitorImp<'s> {
     visitor: FnVisitor<'s>,
@@ -1255,9 +1248,7 @@ impl WalkParallel {
                         }
                     };
                     match DirEntryRaw::from_path(0, path, false) {
-                        Ok(dent) => {
-                            (DirEntry::new_raw(dent, None), root_device)
-                        }
+                        Ok(dent) => (DirEntry::new_raw(dent, None), root_device),
                         Err(err) => {
                             if visitor.visit(Err(err)).is_quit() {
                                 return;
@@ -1406,11 +1397,11 @@ impl Stack {
         // breadth-first. We do depth-first because a breadth first traversal
         // on wide directories with a lot of gitignores is disastrous (for
         // example, searching a directory tree containing all of crates.io).
-        let deques: Vec<Deque<Message>> =
-            std::iter::repeat_with(Deque::new_lifo).take(threads).collect();
-        let stealers = Arc::<[Stealer<Message>]>::from(
-            deques.iter().map(Deque::stealer).collect::<Vec<_>>(),
-        );
+        let deques: Vec<Deque<Message>> = std::iter::repeat_with(Deque::new_lifo)
+            .take(threads)
+            .collect();
+        let stealers =
+            Arc::<[Stealer<Message>]>::from(deques.iter().map(Deque::stealer).collect::<Vec<_>>());
         let stacks: Vec<Stack> = deques
             .into_iter()
             .enumerate()
@@ -1559,12 +1550,7 @@ impl<'s> Worker<'s> {
             return WalkState::Skip;
         }
         for result in readdir {
-            let state = self.generate_work(
-                &work.ignore,
-                depth + 1,
-                work.root_device,
-                result,
-            );
+            let state = self.generate_work(&work.ignore, depth + 1, work.root_device, result);
             if state.is_quit() {
                 return state;
             }
@@ -1595,9 +1581,7 @@ impl<'s> Worker<'s> {
         let fs_dent = match result {
             Ok(fs_dent) => fs_dent,
             Err(err) => {
-                return self
-                    .visitor
-                    .visit(Err(Error::from(err).with_depth(depth)));
+                return self.visitor.visit(Err(Error::from(err).with_depth(depth)));
             }
         };
         let mut dent = match DirEntryRaw::from_entry(depth, &fs_dent) {
@@ -1635,24 +1619,26 @@ impl<'s> Worker<'s> {
                 return WalkState::Continue;
             }
         }
-        let should_skip_filesize =
-            if self.max_filesize.is_some() && !dent.is_dir() {
-                skip_filesize(
-                    self.max_filesize.unwrap(),
-                    dent.path(),
-                    &dent.metadata().ok(),
-                )
-            } else {
-                false
-            };
-        let should_skip_filtered =
-            if let Some(Filter(predicate)) = &self.filter {
-                !predicate(&dent)
-            } else {
-                false
-            };
+        let should_skip_filesize = if self.max_filesize.is_some() && !dent.is_dir() {
+            skip_filesize(
+                self.max_filesize.unwrap(),
+                dent.path(),
+                &dent.metadata().ok(),
+            )
+        } else {
+            false
+        };
+        let should_skip_filtered = if let Some(Filter(predicate)) = &self.filter {
+            !predicate(&dent)
+        } else {
+            false
+        };
         if !should_skip_filesize && !should_skip_filtered {
-            self.send(Work { dent, ignore: ig.clone(), root_device });
+            self.send(Work {
+                dent,
+                ignore: ig.clone(),
+                root_device,
+            });
         }
         WalkState::Continue
     }
@@ -1752,11 +1738,18 @@ fn check_symlink_loop(
     child_depth: usize,
 ) -> Result<(), Error> {
     let hchild = Handle::from_path(child_path).map_err(|err| {
-        Error::from(err).with_path(child_path).with_depth(child_depth)
+        Error::from(err)
+            .with_path(child_path)
+            .with_depth(child_depth)
     })?;
-    for ig in ig_parent.parents().take_while(|ig| !ig.is_absolute_parent()) {
+    for ig in ig_parent
+        .parents()
+        .take_while(|ig| !ig.is_absolute_parent())
+    {
         let h = Handle::from_path(ig.path()).map_err(|err| {
-            Error::from(err).with_path(child_path).with_depth(child_depth)
+            Error::from(err)
+                .with_path(child_path)
+                .with_depth(child_depth)
         })?;
         if hchild == h {
             return Err(Error::Loop {
@@ -1771,15 +1764,8 @@ fn check_symlink_loop(
 
 // Before calling this function, make sure that you ensure that is really
 // necessary as the arguments imply a file stat.
-fn skip_filesize(
-    max_filesize: u64,
-    path: &Path,
-    ent: &Option<Metadata>,
-) -> bool {
-    let filesize = match *ent {
-        Some(ref md) => Some(md.len()),
-        None => None,
-    };
+fn skip_filesize(max_filesize: u64, path: &Path, ent: &Option<Metadata>) -> bool {
+    let filesize = (*ent).as_ref().map(|md| md.len());
 
     if let Some(fs) = filesize {
         if fs > max_filesize {
@@ -1867,14 +1853,16 @@ fn walkdir_is_dir(dent: &walkdir::DirEntry) -> bool {
     if !dent.file_type().is_symlink() || dent.depth() > 0 {
         return false;
     }
-    dent.path().metadata().ok().map_or(false, |md| md.file_type().is_dir())
+    dent.path()
+        .metadata()
+        .ok()
+        .map_or(false, |md| md.file_type().is_dir())
 }
 
 /// Returns true if and only if the given path is on the same device as the
 /// given root device.
 fn is_same_file_system(root_device: u64, path: &Path) -> Result<bool, Error> {
-    let dent_device =
-        device_num(path).map_err(|err| Error::Io(err).with_path(path))?;
+    let dent_device = device_num(path).map_err(|err| Error::Io(err).with_path(path))?;
     Ok(root_device == dent_device)
 }
 
@@ -1957,10 +1945,7 @@ mod tests {
         paths
     }
 
-    fn walk_collect_parallel(
-        prefix: &Path,
-        builder: &WalkBuilder,
-    ) -> Vec<String> {
+    fn walk_collect_parallel(prefix: &Path, builder: &WalkBuilder) -> Vec<String> {
         let mut paths = vec![];
         for dent in walk_collect_entries_parallel(builder) {
             let path = dent.path().strip_prefix(prefix).unwrap();
@@ -2033,7 +2018,7 @@ mod tests {
         wfile(td.path().join("a/bar"), "");
 
         let mut builder = WalkBuilder::new(td.path());
-        builder.add_custom_ignore_filename(&custom_ignore);
+        builder.add_custom_ignore_filename(custom_ignore);
         assert_paths(td.path(), &builder, &["bar", "a", "a/bar"]);
     }
 
@@ -2053,7 +2038,7 @@ mod tests {
         builder.git_ignore(false);
         builder.git_global(false);
         builder.git_exclude(false);
-        builder.add_custom_ignore_filename(&custom_ignore);
+        builder.add_custom_ignore_filename(custom_ignore);
         assert_paths(td.path(), &builder, &["bar", "a", "a/bar"]);
     }
 
@@ -2195,7 +2180,7 @@ mod tests {
         assert_paths(td.path(), &builder, &["a", "a/b", "a/b/foo", "z"]);
         assert_paths(
             td.path(),
-            &builder.follow_links(true),
+            builder.follow_links(true),
             &["a", "a/b", "a/b/foo", "z", "z/foo"],
         );
     }
@@ -2208,15 +2193,12 @@ mod tests {
 
         let dents = WalkBuilder::new(td.path().join("foo"))
             .build()
-            .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(1, dents.len());
         assert!(!dents[0].path_is_symlink());
 
-        let dents = walk_collect_entries_parallel(&WalkBuilder::new(
-            td.path().join("foo"),
-        ));
+        let dents = walk_collect_entries_parallel(&WalkBuilder::new(td.path().join("foo")));
         assert_eq!(1, dents.len());
         assert!(!dents[0].path_is_symlink());
     }
@@ -2230,7 +2212,7 @@ mod tests {
 
         let mut builder = WalkBuilder::new(td.path());
         assert_paths(td.path(), &builder, &["a", "a/b", "a/b/c"]);
-        assert_paths(td.path(), &builder.follow_links(true), &["a", "a/b"]);
+        assert_paths(td.path(), builder.follow_links(true), &["a", "a/b"]);
     }
 
     // It's a little tricky to test the 'same_file_system' option since
@@ -2277,12 +2259,12 @@ mod tests {
             return;
         }
         // We're the root, so the test won't check what we want it to.
-        if fs::read_dir(&dir_path).is_ok() {
+        if fs::read_dir(dir_path).is_ok() {
             return;
         }
 
         // Check that we can't descend but get an entry for the parent dir.
-        let builder = WalkBuilder::new(&dir_path);
+        let builder = WalkBuilder::new(dir_path);
         assert_paths(dir_path.parent().unwrap(), &builder, &["root"]);
     }
 
@@ -2302,8 +2284,7 @@ mod tests {
 
         assert_paths(
             td.path(),
-            &WalkBuilder::new(td.path())
-                .filter_entry(|entry| entry.file_name() != OsStr::new("a")),
+            WalkBuilder::new(td.path()).filter_entry(|entry| entry.file_name() != OsStr::new("a")),
             &["x", "x/y", "x/y/foo"],
         );
     }

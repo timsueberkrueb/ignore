@@ -1,22 +1,26 @@
-// This module provides a data structure, `Ignore`, that connects "directory
-// traversal" with "ignore matchers." Specifically, it knows about gitignore
-// semantics and precedence, and is organized based on directory hierarchy.
-// Namely, every matcher logically corresponds to ignore rules from a single
-// directory, and points to the matcher for its corresponding parent directory.
-// In this sense, `Ignore` is a *persistent* data structure.
-//
-// This design was specifically chosen to make it possible to use this data
-// structure in a parallel directory iterator.
-//
-// My initial intention was to expose this module as part of this crate's
-// public API, but I think the data structure's public API is too complicated
-// with non-obvious failure modes. Alas, such things haven't been documented
-// well.
+//! This module provides a data structure, `Ignore`, that connects "directory
+//! traversal" with "ignore matchers." Specifically, it knows about gitignore
+//! semantics and precedence, and is organized based on directory hierarchy.
+//! Namely, every matcher logically corresponds to ignore rules from a single
+//! directory, and points to the matcher for its corresponding parent directory.
+//! In this sense, `Ignore` is a *persistent* data structure.
+//!
+//! This design was specifically chosen to make it possible to use this data
+//! structure in a parallel directory iterator.
+//!
+//! The original author, Andrew Gallant (BurntSushi) notes:
+//!
+//! > My initial intention was to expose this module as part of this crate's
+//! > public API, but I think the data structure's public API is too complicated
+//! > with non-obvious failure modes. Alas, such things haven't been documented
+//! > well.
+//!
+//! In this fork, I have done exactly that because I needed the extra flexibility.
 
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
-    fs::{File, FileType},
+    fs::{self, File, FileType},
     io::{self, BufRead},
     path::{Path, PathBuf},
     sync::{Arc, RwLock, Weak},
@@ -27,15 +31,15 @@ use crate::{
     overrides::{self, Override},
     pathutil::{is_hidden, strip_prefix},
     types::{self, Types},
-    walk::DirEntry,
-    {Error, Match, PartialErrorBuilder},
+    walk::{DirEntry, DirEntryRaw},
+    Error, Match, PartialErrorBuilder,
 };
 
 /// IgnoreMatch represents information about where a match came from when using
 /// the `Ignore` matcher.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-pub(crate) struct IgnoreMatch<'a>(IgnoreMatchInner<'a>);
+pub struct IgnoreMatch<'a>(IgnoreMatchInner<'a>);
 
 /// IgnoreMatchInner describes precisely where the match information came from.
 /// This is private to allow expansion to more matchers in the future.
@@ -91,7 +95,7 @@ struct IgnoreOptions {
 
 /// Ignore is a matcher useful for recursively walking one or more directories.
 #[derive(Clone, Debug)]
-pub(crate) struct Ignore(Arc<IgnoreInner>);
+pub struct Ignore(Arc<IgnoreInner>);
 
 #[derive(Clone, Debug)]
 struct IgnoreInner {
@@ -140,22 +144,22 @@ struct IgnoreInner {
 
 impl Ignore {
     /// Return the directory path of this matcher.
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.0.dir
     }
 
     /// Return true if this matcher has no parent.
-    pub(crate) fn is_root(&self) -> bool {
+    pub fn is_root(&self) -> bool {
         self.0.parent.is_none()
     }
 
     /// Returns true if this matcher was added via the `add_parents` method.
-    pub(crate) fn is_absolute_parent(&self) -> bool {
+    pub fn is_absolute_parent(&self) -> bool {
         self.0.is_absolute_parent
     }
 
     /// Return this matcher's parent, if one exists.
-    pub(crate) fn parent(&self) -> Option<Ignore> {
+    pub fn parent(&self) -> Option<Ignore> {
         self.0.parent.clone()
     }
 
@@ -163,10 +167,7 @@ impl Ignore {
     ///
     /// Note that this can only be called on an `Ignore` matcher with no
     /// parents (i.e., `is_root` returns `true`). This will panic otherwise.
-    pub(crate) fn add_parents<P: AsRef<Path>>(
-        &self,
-        path: P,
-    ) -> (Ignore, Option<Error>) {
+    pub fn add_parents<P: AsRef<Path>>(&self, path: P) -> (Ignore, Option<Error>) {
         if !self.0.opts.parents
             && !self.0.opts.git_ignore
             && !self.0.opts.git_exclude
@@ -210,18 +211,14 @@ impl Ignore {
             errs.maybe_push(err);
             igtmp.is_absolute_parent = true;
             igtmp.absolute_base = Some(absolute_base.clone());
-            igtmp.has_git =
-                if self.0.opts.require_git && self.0.opts.git_ignore {
-                    parent.join(".git").exists()
-                } else {
-                    false
-                };
+            igtmp.has_git = if self.0.opts.require_git && self.0.opts.git_ignore {
+                parent.join(".git").exists()
+            } else {
+                false
+            };
             let ig_arc = Arc::new(igtmp);
             ig = Ignore(ig_arc.clone());
-            compiled.insert(
-                parent.as_os_str().to_os_string(),
-                Arc::downgrade(&ig_arc),
-            );
+            compiled.insert(parent.as_os_str().to_os_string(), Arc::downgrade(&ig_arc));
         }
         (ig, errs.into_error_option())
     }
@@ -234,23 +231,19 @@ impl Ignore {
     /// returned if it exists.
     ///
     /// Note that all I/O errors are completely ignored.
-    pub(crate) fn add_child<P: AsRef<Path>>(
-        &self,
-        dir: P,
-    ) -> (Ignore, Option<Error>) {
+    pub fn add_child<P: AsRef<Path>>(&self, dir: P) -> (Ignore, Option<Error>) {
         let (ig, err) = self.add_child_path(dir.as_ref());
         (Ignore(Arc::new(ig)), err)
     }
 
     /// Like add_child, but takes a full path and returns an IgnoreInner.
     fn add_child_path(&self, dir: &Path) -> (IgnoreInner, Option<Error>) {
-        let git_type = if self.0.opts.require_git
-            && (self.0.opts.git_ignore || self.0.opts.git_exclude)
-        {
-            dir.join(".git").metadata().ok().map(|md| md.file_type())
-        } else {
-            None
-        };
+        let git_type =
+            if self.0.opts.require_git && (self.0.opts.git_ignore || self.0.opts.git_exclude) {
+                dir.join(".git").metadata().ok().map(|md| md.file_type())
+            } else {
+                None
+            };
         let has_git = git_type.map(|_| true).unwrap_or(false);
 
         let mut errs = PartialErrorBuilder::default();
@@ -258,8 +251,8 @@ impl Ignore {
             Gitignore::empty()
         } else {
             let (m, err) = create_gitignore(
-                &dir,
-                &dir,
+                dir,
+                dir,
                 &self.0.custom_ignore_filenames,
                 self.0.opts.ignore_case_insensitive,
             );
@@ -269,12 +262,8 @@ impl Ignore {
         let ig_matcher = if !self.0.opts.ignore {
             Gitignore::empty()
         } else {
-            let (m, err) = create_gitignore(
-                &dir,
-                &dir,
-                &[".ignore"],
-                self.0.opts.ignore_case_insensitive,
-            );
+            let (m, err) =
+                create_gitignore(dir, dir, &[".ignore"], self.0.opts.ignore_case_insensitive);
             errs.maybe_push(err);
             m
         };
@@ -282,8 +271,8 @@ impl Ignore {
             Gitignore::empty()
         } else {
             let (m, err) = create_gitignore(
-                &dir,
-                &dir,
+                dir,
+                dir,
                 &[".gitignore"],
                 self.0.opts.ignore_case_insensitive,
             );
@@ -296,7 +285,7 @@ impl Ignore {
             match resolve_git_commondir(dir, git_type) {
                 Ok(git_dir) => {
                     let (m, err) = create_gitignore(
-                        &dir,
+                        dir,
                         &git_dir,
                         &["info/exclude"],
                         self.0.opts.ignore_case_insensitive,
@@ -334,8 +323,7 @@ impl Ignore {
     /// Returns true if at least one type of ignore rule should be matched.
     fn has_any_ignore_rules(&self) -> bool {
         let opts = self.0.opts;
-        let has_custom_ignore_files =
-            !self.0.custom_ignore_filenames.is_empty();
+        let has_custom_ignore_files = !self.0.custom_ignore_filenames.is_empty();
         let has_explicit_ignores = !self.0.explicit_ignores.is_empty();
 
         opts.ignore
@@ -347,12 +335,19 @@ impl Ignore {
     }
 
     /// Like `matched`, but works with a directory entry instead.
-    pub(crate) fn matched_dir_entry<'a>(
-        &'a self,
-        dent: &DirEntry,
-    ) -> Match<IgnoreMatch<'a>> {
+    pub fn matched_dir_entry<'a>(&'a self, dent: &DirEntry) -> Match<IgnoreMatch<'a>> {
         let m = self.matched(dent.path(), dent.is_dir());
         if m.is_none() && self.0.opts.hidden && is_hidden(dent) {
+            return Match::Ignore(IgnoreMatch::hidden());
+        }
+        m
+    }
+
+    /// Like `matched`, but also ignores hidden files.
+    pub fn is_ignored<'a>(&'a self, depth: usize, ent: &fs::DirEntry) -> Match<IgnoreMatch<'a>> {
+        let m = self.matched(ent.path(), ent.path().is_dir());
+        let dent = DirEntry::new_raw(DirEntryRaw::from_entry(depth, ent).unwrap(), None);
+        if m.is_none() && self.0.opts.hidden && is_hidden(&dent) {
             return Match::Ignore(IgnoreMatch::hidden());
         }
         m
@@ -362,11 +357,7 @@ impl Ignore {
     /// ignored or not.
     ///
     /// The match contains information about its origin.
-    fn matched<'a, P: AsRef<Path>>(
-        &'a self,
-        path: P,
-        is_dir: bool,
-    ) -> Match<IgnoreMatch<'a>> {
+    fn matched<P: AsRef<Path>>(&self, path: P, is_dir: bool) -> Match<IgnoreMatch<'_>> {
         // We need to be careful with our path. If it has a leading ./, then
         // strip it because it causes nothing but trouble.
         let mut path = path.as_ref();
@@ -397,8 +388,7 @@ impl Ignore {
             }
         }
         if !self.0.types.is_empty() {
-            let mat =
-                self.0.types.matched(path, is_dir).map(IgnoreMatch::types);
+            let mat = self.0.types.matched(path, is_dir).map(IgnoreMatch::types);
             if mat.is_ignore() {
                 return mat;
             } else if mat.is_whitelist() {
@@ -410,20 +400,15 @@ impl Ignore {
 
     /// Performs matching only on the ignore files for this directory and
     /// all parent directories.
-    fn matched_ignore<'a>(
-        &'a self,
-        path: &Path,
-        is_dir: bool,
-    ) -> Match<IgnoreMatch<'a>> {
-        let (
-            mut m_custom_ignore,
-            mut m_ignore,
-            mut m_gi,
-            mut m_gi_exclude,
-            mut m_explicit,
-        ) = (Match::None, Match::None, Match::None, Match::None, Match::None);
-        let any_git =
-            !self.0.opts.require_git || self.parents().any(|ig| ig.0.has_git);
+    fn matched_ignore<'a>(&'a self, path: &Path, is_dir: bool) -> Match<IgnoreMatch<'a>> {
+        let (mut m_custom_ignore, mut m_ignore, mut m_gi, mut m_gi_exclude, mut m_explicit) = (
+            Match::None,
+            Match::None,
+            Match::None,
+            Match::None,
+            Match::None,
+        );
+        let any_git = !self.0.opts.require_git || self.parents().any(|ig| ig.0.has_git);
         let mut saw_git = false;
         for ig in self.parents().take_while(|ig| !ig.0.is_absolute_parent) {
             if m_custom_ignore.is_none() {
@@ -477,9 +462,7 @@ impl Ignore {
                     }
                 };
 
-                for ig in
-                    self.parents().skip_while(|ig| !ig.0.is_absolute_parent)
-                {
+                for ig in self.parents().skip_while(|ig| !ig.0.is_absolute_parent) {
                     if m_custom_ignore.is_none() {
                         m_custom_ignore =
                             ig.0.custom_ignore_matcher
@@ -512,12 +495,12 @@ impl Ignore {
             if !m_explicit.is_none() {
                 break;
             }
-            m_explicit = gi.matched(&path, is_dir).map(IgnoreMatch::gitignore);
+            m_explicit = gi.matched(path, is_dir).map(IgnoreMatch::gitignore);
         }
         let m_global = if any_git {
             self.0
                 .git_global_matcher
-                .matched(&path, is_dir)
+                .matched(path, is_dir)
                 .map(IgnoreMatch::gitignore)
         } else {
             Match::None
@@ -532,7 +515,7 @@ impl Ignore {
     }
 
     /// Returns an iterator over parent ignore matchers, including this one.
-    pub(crate) fn parents(&self) -> Parents<'_> {
+    pub fn parents(&self) -> Parents<'_> {
         Parents(Some(self))
     }
 
@@ -546,7 +529,7 @@ impl Ignore {
 /// An iterator over all parents of an ignore matcher, including itself.
 ///
 /// The lifetime `'a` refers to the lifetime of the initial `Ignore` matcher.
-pub(crate) struct Parents<'a>(Option<&'a Ignore>);
+pub struct Parents<'a>(Option<&'a Ignore>);
 
 impl<'a> Iterator for Parents<'a> {
     type Item = &'a Ignore;
@@ -564,7 +547,7 @@ impl<'a> Iterator for Parents<'a> {
 
 /// A builder for creating an Ignore matcher.
 #[derive(Clone, Debug)]
-pub(crate) struct IgnoreBuilder {
+pub struct IgnoreBuilder {
     /// The root directory path for this ignore matcher.
     dir: PathBuf,
     /// An override matcher (default is empty).
@@ -579,14 +562,19 @@ pub(crate) struct IgnoreBuilder {
     opts: IgnoreOptions,
 }
 
+impl Default for IgnoreBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IgnoreBuilder {
     /// Create a new builder for an `Ignore` matcher.
     ///
-    /// All relative file paths are resolved with respect to the current
-    /// working directory.
-    pub(crate) fn new() -> IgnoreBuilder {
+    /// All relative file paths are resolved with respect to `root_path`.
+    pub fn new() -> IgnoreBuilder {
         IgnoreBuilder {
-            dir: Path::new("").to_path_buf(),
+            dir: Path::new("").to_owned(),
             overrides: Arc::new(Override::empty()),
             types: Arc::new(Types::empty()),
             explicit_ignores: vec![],
@@ -608,7 +596,7 @@ impl IgnoreBuilder {
     ///
     /// The matcher returned won't match anything until ignore rules from
     /// directories are added to it.
-    pub(crate) fn build(&self) -> Ignore {
+    pub fn build(&self) -> Ignore {
         let git_global_matcher = if !self.opts.git_global {
             Gitignore::empty()
         } else {
@@ -632,9 +620,7 @@ impl IgnoreBuilder {
             is_absolute_parent: true,
             absolute_base: None,
             explicit_ignores: Arc::new(self.explicit_ignores.clone()),
-            custom_ignore_filenames: Arc::new(
-                self.custom_ignore_filenames.clone(),
-            ),
+            custom_ignore_filenames: Arc::new(self.custom_ignore_filenames.clone()),
             custom_ignore_matcher: Gitignore::empty(),
             ignore_matcher: Gitignore::empty(),
             git_global_matcher: Arc::new(git_global_matcher),
@@ -650,10 +636,7 @@ impl IgnoreBuilder {
     /// By default, no override matcher is used.
     ///
     /// This overrides any previous setting.
-    pub(crate) fn overrides(
-        &mut self,
-        overrides: Override,
-    ) -> &mut IgnoreBuilder {
+    pub fn overrides(&mut self, overrides: Override) -> &mut IgnoreBuilder {
         self.overrides = Arc::new(overrides);
         self
     }
@@ -663,13 +646,13 @@ impl IgnoreBuilder {
     /// By default, no file type matcher is used.
     ///
     /// This overrides any previous setting.
-    pub(crate) fn types(&mut self, types: Types) -> &mut IgnoreBuilder {
+    pub fn types(&mut self, types: Types) -> &mut IgnoreBuilder {
         self.types = Arc::new(types);
         self
     }
 
     /// Adds a new global ignore matcher from the ignore file path given.
-    pub(crate) fn add_ignore(&mut self, ig: Gitignore) -> &mut IgnoreBuilder {
+    pub fn add_ignore(&mut self, ig: Gitignore) -> &mut IgnoreBuilder {
         self.explicit_ignores.push(ig);
         self
     }
@@ -680,18 +663,19 @@ impl IgnoreBuilder {
     ///
     /// When specifying multiple names, earlier names have lower precedence than
     /// later names.
-    pub(crate) fn add_custom_ignore_filename<S: AsRef<OsStr>>(
+    pub fn add_custom_ignore_filename<S: AsRef<OsStr>>(
         &mut self,
         file_name: S,
     ) -> &mut IgnoreBuilder {
-        self.custom_ignore_filenames.push(file_name.as_ref().to_os_string());
+        self.custom_ignore_filenames
+            .push(file_name.as_ref().to_os_string());
         self
     }
 
     /// Enables ignoring hidden files.
     ///
     /// This is enabled by default.
-    pub(crate) fn hidden(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn hidden(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.hidden = yes;
         self
     }
@@ -702,7 +686,7 @@ impl IgnoreBuilder {
     /// supported by search tools such as ripgrep and The Silver Searcher.
     ///
     /// This is enabled by default.
-    pub(crate) fn ignore(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn ignore(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.ignore = yes;
         self
     }
@@ -713,7 +697,7 @@ impl IgnoreBuilder {
     /// file path given are respected. Otherwise, they are ignored.
     ///
     /// This is enabled by default.
-    pub(crate) fn parents(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn parents(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.parents = yes;
         self
     }
@@ -726,7 +710,7 @@ impl IgnoreBuilder {
     /// This overwrites any previous global gitignore setting.
     ///
     /// This is enabled by default.
-    pub(crate) fn git_global(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn git_global(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.git_global = yes;
         self
     }
@@ -737,7 +721,7 @@ impl IgnoreBuilder {
     /// man page.
     ///
     /// This is enabled by default.
-    pub(crate) fn git_ignore(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn git_ignore(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.git_ignore = yes;
         self
     }
@@ -748,7 +732,7 @@ impl IgnoreBuilder {
     /// `gitignore` man page.
     ///
     /// This is enabled by default.
-    pub(crate) fn git_exclude(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn git_exclude(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.git_exclude = yes;
         self
     }
@@ -758,7 +742,7 @@ impl IgnoreBuilder {
     ///
     /// When disabled, git-related ignore rules are applied even when searching
     /// outside a git repository.
-    pub(crate) fn require_git(&mut self, yes: bool) -> &mut IgnoreBuilder {
+    pub fn require_git(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.require_git = yes;
         self
     }
@@ -766,10 +750,7 @@ impl IgnoreBuilder {
     /// Process ignore files case insensitively
     ///
     /// This is disabled by default.
-    pub(crate) fn ignore_case_insensitive(
-        &mut self,
-        yes: bool,
-    ) -> &mut IgnoreBuilder {
+    pub fn ignore_case_insensitive(&mut self, yes: bool) -> &mut IgnoreBuilder {
         self.opts.ignore_case_insensitive = yes;
         self
     }
@@ -828,10 +809,7 @@ pub(crate) fn create_gitignore<T: AsRef<OsStr>>(
 /// them when multiple repositories are searched.
 ///
 /// Some I/O errors are ignored.
-fn resolve_git_commondir(
-    dir: &Path,
-    git_type: Option<FileType>,
-) -> Result<PathBuf, Option<Error>> {
+fn resolve_git_commondir(dir: &Path, git_type: Option<FileType>) -> Result<PathBuf, Option<Error>> {
     let git_dir_path = || dir.join(".git");
     let git_dir = git_dir_path();
     if !git_type.map_or(false, |ft| ft.is_file()) {
@@ -878,9 +856,7 @@ fn resolve_git_commondir(
 mod tests {
     use std::{io::Write, path::Path};
 
-    use crate::{
-        dir::IgnoreBuilder, gitignore::Gitignore, tests::TempDir, Error,
-    };
+    use crate::{dir::IgnoreBuilder, gitignore::Gitignore, tests::TempDir, Error};
 
     fn wfile<P: AsRef<Path>>(path: P, contents: &str) {
         let mut file = std::fs::File::create(path).unwrap();
@@ -909,8 +885,10 @@ mod tests {
 
         let (gi, err) = Gitignore::new(td.path().join("not-an-ignore"));
         assert!(err.is_none());
-        let (ig, err) =
-            IgnoreBuilder::new().add_ignore(gi).build().add_child(td.path());
+        let (ig, err) = IgnoreBuilder::new()
+            .add_ignore(gi)
+            .build()
+            .add_child(td.path());
         assert!(err.is_none());
         assert!(ig.matched("foo", false).is_ignore());
         assert!(ig.matched("bar", false).is_whitelist());
@@ -1182,14 +1160,16 @@ mod tests {
         mkdirp(git_dir.join("info"));
         wfile(git_dir.join("info/exclude"), "ignore_me");
         mkdirp(git_dir.join("worktrees/linked-worktree"));
-        let commondir_path =
-            || git_dir.join("worktrees/linked-worktree/commondir");
+        let commondir_path = || git_dir.join("worktrees/linked-worktree/commondir");
         mkdirp(td.path().join("linked-worktree"));
         let worktree_git_dir_abs = format!(
             "gitdir: {}",
             git_dir.join("worktrees/linked-worktree").to_str().unwrap(),
         );
-        wfile(td.path().join("linked-worktree/.git"), &worktree_git_dir_abs);
+        wfile(
+            td.path().join("linked-worktree/.git"),
+            &worktree_git_dir_abs,
+        );
 
         // relative commondir
         wfile(commondir_path(), "../..");

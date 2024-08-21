@@ -2,8 +2,7 @@ use std::path::Path;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-const IGNORE_FILE: &'static str =
-    "tests/gitignore_matched_path_or_any_parents_tests.gitignore";
+const IGNORE_FILE: &str = "tests/gitignore_matched_path_or_any_parents_tests.gitignore";
 
 fn get_gitignore() -> Gitignore {
     let mut builder = GitignoreBuilder::new("ROOT");
@@ -24,9 +23,7 @@ fn test_path_should_be_under_root() {
 #[test]
 fn test_files_in_root() {
     let gitignore = get_gitignore();
-    let m = |path: &str| {
-        gitignore.matched_path_or_any_parents(Path::new(path), false)
-    };
+    let m = |path: &str| gitignore.matched_path_or_any_parents(Path::new(path), false);
 
     // 0x
     assert!(m("ROOT/file_root_00").is_ignore());
@@ -56,9 +53,7 @@ fn test_files_in_root() {
 #[test]
 fn test_files_in_deep() {
     let gitignore = get_gitignore();
-    let m = |path: &str| {
-        gitignore.matched_path_or_any_parents(Path::new(path), false)
-    };
+    let m = |path: &str| gitignore.matched_path_or_any_parents(Path::new(path), false);
 
     // 0x
     assert!(m("ROOT/parent_dir/file_deep_00").is_ignore());
@@ -88,9 +83,8 @@ fn test_files_in_deep() {
 #[test]
 fn test_dirs_in_root() {
     let gitignore = get_gitignore();
-    let m = |path: &str, is_dir: bool| {
-        gitignore.matched_path_or_any_parents(Path::new(path), is_dir)
-    };
+    let m =
+        |path: &str, is_dir: bool| gitignore.matched_path_or_any_parents(Path::new(path), is_dir);
 
     // 00
     assert!(m("ROOT/dir_root_00", true).is_ignore());
@@ -192,9 +186,8 @@ fn test_dirs_in_root() {
 #[test]
 fn test_dirs_in_deep() {
     let gitignore = get_gitignore();
-    let m = |path: &str, is_dir: bool| {
-        gitignore.matched_path_or_any_parents(Path::new(path), is_dir)
-    };
+    let m =
+        |path: &str, is_dir: bool| gitignore.matched_path_or_any_parents(Path::new(path), is_dir);
 
     // 00
     assert!(m("ROOT/parent_dir/dir_deep_00", true).is_ignore());
